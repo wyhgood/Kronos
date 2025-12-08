@@ -23,7 +23,7 @@ EPOCHS = 10
 SEQ_LEN = 60         
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
-# ================= 1. 数据适配器 =================
+# ================= 1. 数据适配器 (修复双流输出) =================
 class QuantLabelerDataset(Dataset):
     def __init__(self, data_dir, label_dir, tokenizer, seq_len=60):
         self.tokenizer = tokenizer
@@ -51,6 +51,9 @@ class QuantLabelerDataset(Dataset):
                 df_raw['datetime'] = pd.to_datetime(df_raw['datetime'])
                 df_label['datetime'] = pd.to_datetime(df_label['datetime'])
                 
+                # 预先提取需要的列，确保列名小写
+                df_raw.columns = [c.lower() for c in df_raw.columns]
+                
                 for _, row in df_label.iterrows():
                     target_time = row['datetime']
                     label = int(row['label'])
@@ -59,12 +62,9 @@ class QuantLabelerDataset(Dataset):
                     idx = matches[0]
                     if idx < seq_len - 1: continue
                     
+                    # 截取
                     df_segment = df_raw.iloc[idx - seq_len + 1 : idx + 1].copy()
                     
-                    # 关键修复：直接提取数值列，转为 numpy array
-                    # 假设模型需要 'open', 'high', 'low', 'close', 'volume'
-                    # 并且顺序很重要，或者 Tokenizer 能处理 DataFrame 但需要特定列
-                    # 为了稳妥，我们传 DataFrame，但在 __getitem__ 里做保护
                     self.samples.append({
                         'df': df_segment,
                         'label': label
@@ -84,63 +84,67 @@ class QuantLabelerDataset(Dataset):
         label = item['label']
 
         try:
-            # --- 修复 1: Tokenizer 调用方式 ---
-            # 如果 tokenizer.encode 报错，很可能是因为它期望 raw values
-            # 或者是 DataFrame 但格式有细微差别
-            # 许多 TimeSeries Tokenizer 期望输入是 DataFrame
-            # 如果之前的报错是 linear() argument must be Tensor
-            # 说明 Tokenizer 内部没有自动把 DataFrame 转 Tensor
+            # --- 修复: 正确处理 Tokenizer 的双重输出 (s1, s2) ---
+            encoded = self.tokenizer.encode(df)
             
-            # 我们手动把 DataFrame 转为 Tensor 传进去试试
-            # 提取 5 个核心列
-            cols = ['open', 'high', 'low', 'close', 'volume']
-            # 确保列存在且为 float32
-            data_values = df[cols].values.astype(np.float32) 
+            # 强制解包 tuple/list
+            if isinstance(encoded, (tuple, list)) and len(encoded) == 2:
+                s1_ids = encoded[0]
+                s2_ids = encoded[1]
+            else:
+                # 容错处理
+                s1_ids = encoded
+                s2_ids = np.zeros_like(encoded)
+
+            # 转 Tensor
+            if isinstance(s1_ids, (np.ndarray, list)):
+                s1_ids = torch.tensor(s1_ids, dtype=torch.long)
+            if isinstance(s2_ids, (np.ndarray, list)):
+                s2_ids = torch.tensor(s2_ids, dtype=torch.long)
             
-            # 传给 tokenizer
-            # 注意：KronosTokenizer.encode 具体实现如果是处理 dataframe
-            # 那么之前的报错很奇怪。我们尝试直接传 values
-            # 如果 tokenizer 只需要 dataframe，那可能是 df 里的数据类型不是 float
-            
-            # 方案 A: 依然传 df，但确保全是 float
-            # input_ids = self.tokenizer.encode(df)
-            
-            # 方案 B (针对报错修复): Tokenizer 可能只是做离散化，
-            # 实际上模型输入需要的是 embedding 前的数值或者已经量化好的 ID
-            # 让我们假设 tokenizer.encode 返回的是 token ids
-            input_ids = self.tokenizer.encode(df)
-            
-            if isinstance(input_ids, list):
-                input_ids = torch.tensor(input_ids, dtype=torch.long)
-            elif isinstance(input_ids, np.ndarray):
-                input_ids = torch.from_numpy(input_ids).long()
-            
-            input_ids = input_ids.squeeze()
+            s1_ids = s1_ids.squeeze()
+            s2_ids = s2_ids.squeeze()
             
         except Exception as e:
-            # print(f"Tokenizer 编码错误: {e}") 
-            # 暂时用全 0 替代，避免刷屏，实际需要调试 tokenizer 源码
-            input_ids = torch.zeros(self.seq_len, dtype=torch.long)
+            # print(f"Tokenizer error: {e}")
+            s1_ids = torch.zeros(self.seq_len, dtype=torch.long)
+            s2_ids = torch.zeros(self.seq_len, dtype=torch.long)
 
-        return input_ids, torch.tensor(label, dtype=torch.long)
+        return s1_ids, s2_ids, torch.tensor(label, dtype=torch.long)
 
-# ================= 2. 模型定义 =================
+# ================= 2. 模型定义 (修复维度与输入) =================
 class KronosClassifier(nn.Module):
     def __init__(self, model_path):
         super().__init__()
         print(f"正在加载预训练模型: {model_path} ...")
         self.backbone = Kronos.from_pretrained(model_path)
         
+        # 冻结参数
         for param in self.backbone.parameters():
             param.requires_grad = False
             
-        try:
-            self.hidden_size = self.backbone.config.hidden_size
-        except:
-            self.hidden_size = 768 
-            
-        print(f"模型加载成功，隐藏层维度: {self.hidden_size}")
+        # --- 修复: 自动检测隐藏层维度 ---
+        print("🔍 正在自动检测模型输出维度...")
+        dummy_s1 = torch.zeros(1, 10, dtype=torch.long) # 构造假数据
+        dummy_s2 = torch.zeros(1, 10, dtype=torch.long)
         
+        with torch.no_grad():
+            try:
+                outputs = self.backbone(dummy_s1, dummy_s2)
+                if hasattr(outputs, 'last_hidden_state'):
+                    last_hidden = outputs.last_hidden_state
+                elif isinstance(outputs, tuple):
+                    last_hidden = outputs[0]
+                else:
+                    last_hidden = outputs
+                
+                self.hidden_size = last_hidden.shape[-1]
+                print(f"✅ 检测成功! Hidden Size = {self.hidden_size}")
+            except Exception as e:
+                print(f"⚠️ 检测失败 ({e}), 回退到默认 768")
+                self.hidden_size = 768
+        
+        # 定义分类头
         self.classifier = nn.Sequential(
             nn.Linear(self.hidden_size, 256),
             nn.ReLU(),
@@ -148,35 +152,14 @@ class KronosClassifier(nn.Module):
             nn.Linear(256, 2)
         )
 
-    def forward(self, input_ids):
-        # --- 修复 2: 移除 output_hidden_states 参数 ---
-        # Kronos 的 forward 只接受 input_ids (和 mask)
-        # 它返回的直接就是 logits 或者 transformer output
-        outputs = self.backbone(input_ids)
+    def forward(self, s1_ids, s2_ids):
+        # --- 修复: 传入双流参数 ---
+        outputs = self.backbone(s1_ids, s2_ids)
         
-        # 检查输出类型并提取 hidden state
         if hasattr(outputs, 'last_hidden_state'):
             last_hidden_state = outputs.last_hidden_state
         elif isinstance(outputs, tuple):
-            last_hidden_state = outputs[0] # 通常第一个是 hidden state
-        elif isinstance(outputs, torch.Tensor):
-            # 如果直接返回 Tensor，这通常是 Logits (Vocab Size)
-            # 这就麻烦了，我们需要中间层的特征
-            # 如果 Kronos forward 没法返回 hidden state，我们需要 hack 一下
-            # 但通常 transformer 库的模型都会返回 hidden state
-            # 假设它是 logits，维度是 [batch, seq, vocab]
-            # 我们不能用 logits 做分类特征，因为它太大了
-            
-            # 让我们再试一次假设它是 hidden state
-            # 如果维度最后一维是 768，那就是 hidden state
-            # 如果是 30000+，那就是 logits
-            if outputs.shape[-1] == self.hidden_size:
-                last_hidden_state = outputs
-            else:
-                # 这是一个悲剧，模型只吐出预测结果，不吐出特征
-                # 我们只能强行用它的 embedding 层或者修改源码
-                # 但大概率它返回的是 hidden state (Decoder output)
-                last_hidden_state = outputs # 暂时赌它是特征
+            last_hidden_state = outputs[0]
         else:
             last_hidden_state = outputs
 
@@ -203,8 +186,6 @@ def main():
         print("❌ 没有找到有效样本")
         return
 
-    # 注意：如果 Tokenizer 报错，这里的 collate_fn 可能需要处理 padding
-    # 但 Kronos 应该是定长输入的，不需要 padding
     train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
 
     model = KronosClassifier(MODEL_PATH).to(DEVICE)
@@ -221,16 +202,17 @@ def main():
         
         progress_bar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{EPOCHS}")
         
-        for batch_ids, batch_labels in progress_bar:
-            batch_ids = batch_ids.to(DEVICE)
+        # --- 修复: 解包 s1, s2, label ---
+        for s1_ids, s2_ids, batch_labels in progress_bar:
+            s1_ids = s1_ids.to(DEVICE)
+            s2_ids = s2_ids.to(DEVICE)
             batch_labels = batch_labels.to(DEVICE)
             
-            # 简单的防错：如果 batch_ids 全是 0，说明 tokenizer 失败了，跳过
-            if batch_ids.sum() == 0:
-                continue
-
             optimizer.zero_grad()
-            logits = model(batch_ids)
+            
+            # 传入双流
+            logits = model(s1_ids, s2_ids)
+            
             loss = criterion(logits, batch_labels)
             loss.backward()
             optimizer.step()
@@ -244,7 +226,7 @@ def main():
             progress_bar.set_postfix({'Loss': f"{loss.item():.4f}", 'Acc': acc_str})
         
     torch.save(model.classifier.state_dict(), "silly_money_head.pth")
-    print(f"\n✅ 训练完成！分类头已保存。")
+    print(f"\n✅ 训练完成！分类头已保存为 silly_money_head.pth")
 
 if __name__ == "__main__":
     main()
