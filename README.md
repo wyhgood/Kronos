@@ -1,3 +1,49 @@
+
+安装流程 
+sudo apt update
+sudo apt install git
+
+# 克隆项目到本地
+git clone https://github.com/wyhgood/Kronos.git
+cd Kronos
+
+# 查看项目结构
+ls -la
+
+# 创建虚拟环境
+python3 -m venv kronos_env
+
+# 激活虚拟环境
+source kronos_env/bin/activate
+
+# 验证激活成功（命令行前面会显示 (kronos_env)）
+# 进入项目目录
+cd Kronos
+
+# 安装requirements.txt中的所有依赖
+pip install -r requirements.txt
+
+# 如果遇到网络问题，可以使用国内镜像源
+pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple/
+
+test pytorch
+python3 test_gpu_pytorch.py
+
+test kronos 安装是否成功
+python3 test_kronos.py
+
+作者：Henry的量化策略小作坊
+链接：https://juejin.cn/post/7568710909314334758
+来源：稀土掘金
+著作权归作者所有。商业转载请联系作者获得授权，非商业转载请注明出处。
+
+
+
+
+
+
+
+
 <div align="center">
   <h2><b>Kronos: A Foundation Model for the Language of Financial Markets </b></h2>
 </div>
@@ -325,6 +371,7 @@ If you use Kronos in your research, we would appreciate a citation to our [paper
 
 ## 📜 License 
 This project is licensed under the [MIT License](./LICENSE).
+
 
 
 
