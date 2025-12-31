@@ -1,4 +1,115 @@
+Kronos 量化模型训练手册 (Sim-to-Real 版)
+核心理念： 不要等待市场给你机会，自己创造 10 万次机会喂给 AI，再用真实市场做校验。 目标形态： 均线压制下的假突破（震荡 -> 诱多阳线 -> 猎杀阴线）。
 
+📂 第一阶段：军火库储备（数据生成）
+目标： 生产 1 万 - 10 万条高质量的“合成数据”，覆盖各种变异形态。
+
+1. 手工打造“黄金样本” (必须做)
+你是教官，你要先定义标准。
+
+程序： kline_surgeon.py (K 线外科医生)
+
+操作：
+
+运行 streamlit run kline_surgeon.py。
+
+正样本 (Pos)： 捏造 20-50 个完美的“诱多杀跌”形态。
+
+硬负样本 (Hard Neg)： 捏造 20-50 个“看起来像突破，结果真的飞了”的形态（教 AI 别乱空）。
+
+用途： 这些数据既可以混入训练集，也可以留作最后的“考卷”。
+
+2. 批量生产“常规弹药” (主力军)
+利用规则生成器，瞬间生成海量数据。
+
+程序： generator_v6.py (或 v4/v5，建议用 v6 真实分布版)
+
+操作：
+
+打开脚本，设置生成数量（比如循环 10,000 次）。
+
+它会自动按 15% 强趋势 / 45% 宽幅震荡 / 40% 箱体的比例生成。
+
+输出： 保存为 .npy 或 .csv 格式的训练集（需微调代码对接 Dataset）。
+
+3. (进阶) 伪造“高保真噪音”
+如果模型在实盘总被噪音骗，用这个加餐。
+
+程序： gan_kline_forger.py (GAN 伪造大师)
+
+操作：
+
+喂给它真实的 doupo.csv 或你筛选出的假突破片段。
+
+训练 200 轮后，让它生成几千张带有真实市场“毛刺感”的 K 线。
+
+🏋️ 第二阶段：封闭特训（预训练）
+目标： 让 Kronos 在合成数据上把“假突破”刻入 DNA，达到 99% 准确率。
+
+程序： train_silly_money.py (终极魔改版)
+
+关键配置 (Config)：
+
+Python
+
+# 模式：全量学习 (从零开始)
+MODEL_PATH = "NeoQuasar/Kronos-base"
+SYNTHETIC_WEIGHTS = None  # 不加载旧权重
+DATA_DIR = "generated_data" # 指向你的合成数据文件夹
+AUGMENT = True            # 开启数据增强 (随机缩放、加噪)
+EPOCHS = 20 ~ 50          # 合成数据多跑几轮
+LR = 2e-5                 # 全量微调标准学习率
+执行命令： python train_silly_money.py
+
+产出： best_full_finetune.pth (这是模型的“出师证明”)。
+
+🎯 第三阶段：实战演习（迁移学习 & 微调）
+目标： 让模型适应真实数据的“手感”（滑点、跳空、非理性波动）。
+
+数据准备： 你的 89 条（或更多）真实标注数据。
+
+程序： train_silly_money.py (同一脚本，不同配置)
+
+关键配置 (Config)：
+
+Python
+
+# 模式：迁移学习 (站在巨人的肩膀上)
+MODEL_PATH = "NeoQuasar/Kronos-base"
+SYNTHETIC_WEIGHTS = "best_full_finetune.pth" # 🔥 加载刚才训练好的脑子
+DATA_DIR = "real_data"    # 指向真实数据文件夹
+
+# 🔥 锁头策略 (防止过拟合小样本)
+FREEZE_BACKBONE = True    # 锁死底座，只练眼睛
+LR = 1e-4                 # 只练头，学习率可以大一点
+EPOCHS = 50 ~ 100         # 数据少，多跑几轮保证收敛
+执行命令： python train_silly_money.py
+
+产出： silly_money_final_weapon.pth (最终实盘模型)。
+
+🔍 第四阶段：视觉验收（盲测）
+目标： 只有你亲眼认可的信号，才能开实盘。
+
+程序： verify_visual.py
+
+操作：
+
+加载 silly_money_final_weapon.pth。
+
+让它跑一遍你没见过的 2024 年数据。
+
+它会画出 K 线图，并在图上标出 PRED: BUY (Conf: 98%)。
+
+通过标准： 随机抽查 10 张图，至少有 8-9 张是你觉得“这单能做”的。
+
+🛠️ 附录：核心技术检查清单 (Checklist)
+在运行任何训练之前，请确保代码里包含以下 3 大护法，否则必报错：
+
+✅ 6 列数据补全： 必须包含 Amount (成交额)。如果 CSV 里没有，代码里必须有 df['amount'] = close * volume。
+
+✅ 取模大法 (Modulo Hack)： Tokenizer 输出的 ID 必须 % 1024。这是解决 CUDA error: device-side assert triggered 的唯一解。
+
+✅ 归一化 (Log + Z-Score)： Volume 和 Amount 必须做 np.log1p，价格必须做 (p - mean) / std。
 安装流程 
 sudo apt update
 sudo apt install git
@@ -371,6 +482,7 @@ If you use Kronos in your research, we would appreciate a citation to our [paper
 
 ## 📜 License 
 This project is licensed under the [MIT License](./LICENSE).
+
 
 
 
