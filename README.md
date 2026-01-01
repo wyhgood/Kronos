@@ -1,3 +1,12 @@
+cuda 11.8
+python 3.10 - 3.12
+组件	最低要求	推荐配置
+GPU型号	NVIDIA GPU with CUDA 11.8+	RTX 3080, RTX 4080, A100
+显存(VRAM)	6GB	8GB+
+CUDA版本	11.8	12.1+
+驱动版本	515.65+	最新驱动
+
+
 Kronos 量化模型训练手册 (Sim-to-Real 版)
 核心理念： 不要等待市场给你机会，自己创造 10 万次机会喂给 AI，再用真实市场做校验。 目标形态： 均线压制下的假突破（震荡 -> 诱多阳线 -> 猎杀阴线）。
 
@@ -482,6 +491,7 @@ If you use Kronos in your research, we would appreciate a citation to our [paper
 
 ## 📜 License 
 This project is licensed under the [MIT License](./LICENSE).
+
 
 
 
