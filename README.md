@@ -1,3 +1,9 @@
+仙宫云镜像选择 如下 
+<img width="1544" height="1046" alt="image" src="https://github.com/user-attachments/assets/673ff605-4860-484d-b531-0a030c2d7394" />
+
+
+
+
 cuda 11.8
 python 3.10 - 3.12
 组件	最低要求	推荐配置
@@ -491,6 +497,7 @@ If you use Kronos in your research, we would appreciate a citation to our [paper
 
 ## 📜 License 
 This project is licensed under the [MIT License](./LICENSE).
+
 
 
 
